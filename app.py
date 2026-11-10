@@ -141,23 +141,69 @@ def add_history_entry(entry):
 
 
 
-def get_system_default_folder():
-    sys_name = platform.system().lower()
+def is_android():
+    """True when running under Termux / on an Android userland (platform.system() reports 'Linux' there)."""
+    if sys.platform == "win32" or sys.platform == "darwin":
+        return False
+    prefix = os.environ.get("PREFIX", "")
+    return (
+        "com.termux" in prefix
+        or "com.termux" in os.path.expanduser("~")
+        or bool(os.environ.get("TERMUX_VERSION"))
+        or (os.environ.get("ANDROID_ROOT") is not None and os.path.isdir("/system"))
+    )
+
+
+ANDROID_SHARED_ROOT = "/storage/emulated/0"
+
+
+def android_media_scan(path):
+    """Tell Android's media scanner about a new file so it shows up in the file manager's
+    Videos / Audio / Images sections and in Gallery. Files written from Termux are otherwise
+    invisible to MediaStore. Uses Termux's built-in `am` (no extra app). Silent best-effort."""
+    if not path or not is_android() or not shutil.which("am"):
+        return
+    try:
+        from urllib.parse import quote
+        uri = "file://" + quote(os.path.abspath(path))
+        subprocess.run(
+            ["am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE", "-d", uri],
+            capture_output=True, timeout=10,
+        )
+    except Exception:
+        pass
+
+
+def get_android_download_dir():
+    """Best writable Downloads/ReClip location on Android (shared storage if Termux has access to it)."""
     home = os.path.expanduser("~")
-    if "windows" in sys_name:
-        return os.path.join(home, "Downloads", "ReClip")
-    elif "darwin" in sys_name:
-        return os.path.join(home, "Downloads", "ReClip")
-    else:  # linux or other
-        return os.path.join(home, "Downloads", "ReClip")
+    for base in ("/storage/emulated/0/Download", os.path.join(home, "storage", "downloads")):
+        if os.path.isdir(base) and os.access(base, os.W_OK):
+            return os.path.join(base, "ReClip")
+    return os.path.join(home, "Downloads", "ReClip")
+
+
+def get_system_default_folder():
+    home = os.path.expanduser("~")
+    if is_android():
+        return get_android_download_dir()
+    return os.path.join(home, "Downloads", "ReClip")
 
 
 def get_effective_download_dir(output_folder=None):
     if output_folder and str(output_folder).strip():
         try:
-            chosen = os.path.abspath(str(output_folder).strip())
-            if is_safe_system_path(chosen):
-                return chosen
+            # Expand "~" and ignore paths that aren't absolute on this server's OS
+            # (e.g. a Windows "C:\\..." placeholder sent to a Linux/Android server).
+            chosen = os.path.expanduser(str(output_folder).strip())
+            # Android: the UI hides the "/storage/emulated/0/" prefix, so a path like
+            # "Download/ReClip" (typed or displayed) is completed here automatically.
+            if is_android() and chosen and not os.path.isabs(chosen) and not re.match(r"^[A-Za-z]:[\\/]", chosen):
+                chosen = os.path.join(ANDROID_SHARED_ROOT, chosen.strip("/\\"))
+            if os.path.isabs(chosen):
+                chosen = os.path.abspath(chosen)
+                if is_safe_system_path(chosen):
+                    return chosen
         except Exception:
             pass
     return get_system_default_folder()
@@ -252,10 +298,139 @@ def get_ytdlp_bot_bypass_args(cookies_source="auto", use_client_spoof=True):
         return args
 
     # Method 1: Client spoofing fallback when no cookies are available
-    if use_client_spoof:
+    # On Android/Termux the android client is what caps YouTube at 360p (SABR), so use
+    # yt-dlp's default clients there (needs nodejs + yt-dlp-ejs, see the Setup page).
+    if use_client_spoof and not is_android():
         args.extend(["--extractor-args", "youtube:player_client=android,web"])
 
     return args
+
+
+# ---------------------------------------------------------------------------
+# Automatic YouTube access handling (age-restricted / "confirm you're not a bot")
+# Nothing here needs any UI: the first attempt uses the normal arguments; if YouTube
+# blocks it, other ways in are tried automatically and the one that works is
+# remembered for that URL so the size check / download use it too.
+# ---------------------------------------------------------------------------
+_BYPASS_BY_URL = {}
+_BLOCK_MARKERS = (
+    "not a bot", "sign in", "confirm your age", "age-restricted", "age restricted",
+    "inappropriate for some", "login required", "429", "too many requests",
+)
+
+
+def is_blocked_error(err_text):
+    e = (err_text or "").lower()
+    return any(m in e for m in _BLOCK_MARKERS)
+
+
+def is_age_error(err_text):
+    e = (err_text or "").lower()
+    return any(m in e for m in ("confirm your age", "age-restricted", "age restricted", "inappropriate for some"))
+
+
+def installed_browsers():
+    """Browsers that have a profile on this machine (empty on servers, Docker and Termux)."""
+    home = os.path.expanduser("~")
+    local = os.environ.get("LOCALAPPDATA", "")
+    roaming = os.environ.get("APPDATA", "")
+    if sys.platform == "win32":
+        paths = {
+            "firefox": os.path.join(roaming, "Mozilla", "Firefox", "Profiles"),
+            "chrome": os.path.join(local, "Google", "Chrome", "User Data"),
+            "edge": os.path.join(local, "Microsoft", "Edge", "User Data"),
+            "brave": os.path.join(local, "BraveSoftware", "Brave-Browser", "User Data"),
+            "opera": os.path.join(roaming, "Opera Software", "Opera Stable"),
+            "vivaldi": os.path.join(local, "Vivaldi", "User Data"),
+        }
+    elif sys.platform == "darwin":
+        sup = os.path.join(home, "Library", "Application Support")
+        paths = {
+            "firefox": os.path.join(sup, "Firefox", "Profiles"),
+            "chrome": os.path.join(sup, "Google", "Chrome"),
+            "edge": os.path.join(sup, "Microsoft Edge"),
+            "brave": os.path.join(sup, "BraveSoftware", "Brave-Browser"),
+            "opera": os.path.join(sup, "com.operasoftware.Opera"),
+            "vivaldi": os.path.join(sup, "Vivaldi"),
+            "safari": os.path.join(home, "Library", "Cookies"),
+        }
+    else:
+        cfg = os.path.join(home, ".config")
+        paths = {
+            "firefox": os.path.join(home, ".mozilla", "firefox"),
+            "chrome": os.path.join(cfg, "google-chrome"),
+            "chromium": os.path.join(cfg, "chromium"),
+            "edge": os.path.join(cfg, "microsoft-edge"),
+            "brave": os.path.join(cfg, "BraveSoftware", "Brave-Browser"),
+            "opera": os.path.join(cfg, "opera"),
+            "vivaldi": os.path.join(cfg, "vivaldi"),
+        }
+    return [name for name, path in paths.items() if path and os.path.isdir(path)]
+
+
+def get_bypass_args_for(url, cookies_source="auto", use_client_spoof=True):
+    """Arguments for this URL: whatever worked last time, else the normal defaults."""
+    learned = _BYPASS_BY_URL.get((url or "").strip())
+    if learned:
+        return list(learned)
+    return get_ytdlp_bot_bypass_args(cookies_source, use_client_spoof)
+
+
+def _remember_bypass(url, args):
+    if len(_BYPASS_BY_URL) > 200:
+        _BYPASS_BY_URL.pop(next(iter(_BYPASS_BY_URL)))
+    _BYPASS_BY_URL[(url or "").strip()] = list(args)
+
+
+def _fallback_attempts(tried_args):
+    """Other ways to get past a YouTube block, most reliable first."""
+    attempts = []
+    base = ["--js-runtimes", "node"]
+    if os.path.exists(COOKIE_FILE) and os.path.getsize(COOKIE_FILE) > 0:
+        attempts.append(base + ["--cookies", COOKIE_FILE])
+    for browser in installed_browsers():
+        attempts.append(base + ["--cookies-from-browser", browser])
+    # No sign-in needed for many age-gated videos when using these player clients
+    attempts.append(base + ["--extractor-args", "youtube:player_client=tv,web_embedded"])
+    attempts.append(base + ["--extractor-args", "youtube:player_client=mweb"])
+    attempts.append(base + ["--extractor-args", "youtube:player_client=android,web"])
+    return [a for a in attempts if a != tried_args]
+
+
+def run_ytdlp_with_fallbacks(prefix, tail, url, cookies_source="auto", use_client_spoof=True, timeout=60):
+    """Run yt-dlp; if YouTube blocks it, quietly retry other ways. Returns the CompletedProcess."""
+    first_args = get_bypass_args_for(url, cookies_source, use_client_spoof)
+    result = subprocess.run(prefix + first_args + tail, capture_output=True, text=True,
+                            timeout=timeout, encoding="utf-8", errors="replace")
+    if result.returncode == 0 or not is_blocked_error(result.stderr):
+        return result
+
+    deadline = time.time() + 120
+    for args in _fallback_attempts(first_args):
+        if time.time() > deadline:
+            break
+        try:
+            res = subprocess.run(prefix + args + tail, capture_output=True, text=True,
+                                 timeout=timeout, encoding="utf-8", errors="replace")
+        except subprocess.TimeoutExpired:
+            continue
+        if res.returncode == 0 and res.stdout.strip():
+            _remember_bypass(url, args)
+            return res
+    return result
+
+
+def friendly_block_message(err_text):
+    last = (err_text or "").strip().split("\n")[-1] if (err_text or "").strip() else "Download failed"
+    if is_age_error(err_text):
+        return ("This video is age-restricted and needs a signed-in YouTube session. "
+                "Sign in to YouTube in Firefox or Chrome on this device, or save a cookies.txt file at "
+                f"{COOKIE_FILE} and try again.")
+    if is_blocked_error(err_text):
+        return ("YouTube is asking to confirm you're not a bot. Sign in to YouTube in Firefox or Chrome on this "
+                f"device, or save a cookies.txt file at {COOKIE_FILE}, then try again. ({last})")
+    return last
+
 
 
 def parse_ytdlp_json(stdout):
@@ -394,7 +569,7 @@ def run_download(job_id, url, format_choice, format_id, output_folder=None, crea
         "--geo-bypass",
         "--retries", "10",
         "--fragment-retries", "10",
-    ] + get_ytdlp_bot_bypass_args(cookies_source, use_client_spoof) + [
+    ] + get_bypass_args_for(url, cookies_source, use_client_spoof) + [
         "-o", out_template
     ]
 
@@ -472,6 +647,31 @@ def run_download(job_id, url, format_choice, format_id, output_folder=None, crea
 
     cmd.extend(["--", url])
 
+    # --- Progress model -------------------------------------------------
+    # Overall percent is monotonic. Download phase maps to 0-88 (video ~85% / audio ~15%
+    # when two streams are merged), then post-processing steps move it 90 -> 98.
+    _DL_MAX = 88.0
+    _NON_MEDIA_EXTS = {".vtt", ".srt", ".ass", ".ttml", ".srv1", ".srv2", ".srv3", ".json3",
+                       ".lrc", ".jpg", ".jpeg", ".png", ".webp", ".json", ".description"}
+    prog = {"pct": 0.0, "frac": 0.0, "seen": 0, "streams": 2 if format_choice != "audio" else 1,
+            "media": True, "post": False}
+
+    def _overall():
+        weights = [0.85, 0.15] if prog["streams"] >= 2 else [1.0]
+        idx = min(max(prog["seen"] - 1, 0), len(weights) - 1)
+        return (sum(weights[:idx]) + weights[idx] * prog["frac"]) * _DL_MAX
+
+    def _set_progress(pct, stage, speed="", eta="", size=""):
+        pct = max(prog["pct"], min(98.0, round(pct, 1)))
+        prog["pct"] = pct
+        job["progress"] = {
+            "percent": pct,
+            "speed": speed,
+            "eta": eta,
+            "total_size": size,
+            "stage": stage,
+        }
+
     job["progress"] = {
         "percent": 0.0,
         "speed": "",
@@ -502,8 +702,23 @@ def run_download(job_id, url, format_choice, format_id, output_folder=None, crea
             if len(last_lines) > 20:
                 last_lines.pop(0)
 
-            # Direct slice FFmpeg progress output
-            if is_direct_slice and ("frame=" in line or "size=" in line or "time=" in line):
+            # ---- Unified, monotonic progress (never goes backwards) ----
+            # New media stream (video / audio) starting
+            if "[download] Destination:" in line:
+                dest = line.split("Destination:", 1)[1].strip()
+                dext = os.path.splitext(dest)[1].lower()
+                if dext in _NON_MEDIA_EXTS:
+                    prog["media"] = False  # subtitles / thumbnails: ignore their 0-100%
+                else:
+                    prog["media"] = True
+                    prog["seen"] += 1
+                    prog["frac"] = 0.0
+                    if prog["seen"] == 1:
+                        # "<job>.f137.mp4" style name => separate video+audio streams will be merged
+                        prog["streams"] = 2 if re.search(r"\.f[\w-]+\.[A-Za-z0-9]+$", dest) else 1
+                    _set_progress(_overall(), "Direct slicing..." if is_direct_slice else "Downloading")
+            # Direct slice (FFmpeg) progress output
+            elif is_direct_slice and not prog["post"] and prog["media"] and ("frame=" in line or "size=" in line or "time=" in line):
                 time_match = re.search(r"time=([\d:.]+)", line)
                 speed_match = re.search(r"speed=\s*([\d\.]+[xX]?)", line)
                 size_match = re.search(r"size=\s*([\d\.]+[A-Za-z]+)", line)
@@ -511,77 +726,47 @@ def run_download(job_id, url, format_choice, format_id, output_folder=None, crea
                 speed = (speed_match.group(1) + ("" if "x" in speed_match.group(1).lower() else "x")) if speed_match else ""
                 size = size_match.group(1) if size_match else ""
 
-                current_pct = job.get("progress", {}).get("percent", 5.0)
                 if time_match and slice_duration > 0:
-                    current_time_sec = parse_time_str(time_match.group(1))
-                    pct = min(98.0, max(5.0, round((current_time_sec / slice_duration) * 100, 1)))
+                    frac = min(1.0, parse_time_str(time_match.group(1)) / slice_duration)
                 else:
-                    pct = min(95.0, round(current_pct + 1.5, 1))
-
-                job["progress"] = {
-                    "percent": pct,
-                    "speed": speed,
-                    "eta": "",
-                    "total_size": size,
-                    "stage": "Direct slicing...",
-                }
-            elif is_direct_slice and ("Downloading 1 time ranges:" in line or "[download] Destination:" in line):
-                job["progress"] = {
-                    "percent": 5.0,
-                    "speed": "",
-                    "eta": "",
-                    "total_size": "",
-                    "stage": "Direct slicing...",
-                }
+                    frac = min(0.95, prog["frac"] + 0.02)
+                prog["frac"] = max(prog["frac"], frac)
+                _set_progress(_overall(), "Direct slicing...", speed=speed, size=size)
             # Parse progress: [download]  45.2% of ~ 125.40MiB at 5.20MiB/s ETA 00:13
             elif "[download]" in line:
+                if prog["post"] or not prog["media"]:
+                    continue
                 pct_match = re.search(r"([\d\.]+)%", line)
+                if not pct_match:
+                    continue
                 speed_match = re.search(r"at\s+([\d\.]+[A-Za-z]+/s)", line)
                 eta_match = re.search(r"ETA\s+([\d:]+)", line)
-                size_match = re.search(r"of\s+~?([\d\.]+[A-Za-z]+)", line)
+                size_match = re.search(r"of\s+~?\s*([\d\.]+[A-Za-z]+)", line)
 
-                pct = float(pct_match.group(1)) if pct_match else (100.0 if "100%" in line else 0.0)
-                speed = speed_match.group(1) if speed_match else ""
-                eta = eta_match.group(1) if eta_match else ""
-                size = size_match.group(1) if size_match else ""
-
-                stage_name = "Direct slicing..." if is_direct_slice else "Downloading"
-
-                job["progress"] = {
-                    "percent": pct,
-                    "speed": speed,
-                    "eta": eta,
-                    "total_size": size,
-                    "stage": stage_name,
-                }
+                frac = min(1.0, float(pct_match.group(1)) / 100.0)
+                prog["frac"] = max(prog["frac"], frac)
+                _set_progress(
+                    _overall(),
+                    "Direct slicing..." if is_direct_slice else "Downloading",
+                    speed=speed_match.group(1) if speed_match else "",
+                    eta=eta_match.group(1) if eta_match else "",
+                    size=size_match.group(1) if size_match else "",
+                )
             elif "[ExtractAudio]" in line:
-                job["progress"] = {
-                    "percent": 99.0,
-                    "speed": "",
-                    "eta": "",
-                    "stage": "Extracting audio...",
-                }
+                prog["post"] = True
+                _set_progress(90.0, "Extracting audio...")
             elif "[Merger]" in line:
-                job["progress"] = {
-                    "percent": 99.0,
-                    "speed": "",
-                    "eta": "",
-                    "stage": "Merging tracks...",
-                }
+                prog["post"] = True
+                _set_progress(92.0, "Merging tracks...")
+            elif line.startswith("[Fixup") or "[VideoRemuxer]" in line or "[VideoConvertor]" in line:
+                prog["post"] = True
+                _set_progress(93.0, "Merging tracks...")
             elif "[EmbedSubtitle]" in line:
-                job["progress"] = {
-                    "percent": 99.0,
-                    "speed": "",
-                    "eta": "",
-                    "stage": "Embedding subtitles...",
-                }
-            elif "[Metadata]" in line or "[ThumbnailsConvertor]" in line:
-                job["progress"] = {
-                    "percent": 99.0,
-                    "speed": "",
-                    "eta": "",
-                    "stage": "Embedding metadata...",
-                }
+                prog["post"] = True
+                _set_progress(94.0, "Embedding subtitles...")
+            elif "[Metadata]" in line or "[ThumbnailsConvertor]" in line or "[EmbedThumbnail]" in line:
+                prog["post"] = True
+                _set_progress(96.0, "Embedding metadata...")
 
         proc.wait(timeout=300)
         if job.get("cancelled"):
@@ -594,7 +779,11 @@ def run_download(job_id, url, format_choice, format_id, output_folder=None, crea
                 job["status"] = "cancelled"
             else:
                 job["status"] = "error"
-                job["error"] = last_lines[-1] if last_lines else "Download process failed"
+                _err_blob = "\n".join(last_lines) if last_lines else ""
+                if is_blocked_error(_err_blob):
+                    job["error"] = friendly_block_message(_err_blob)
+                else:
+                    job["error"] = last_lines[-1] if last_lines else "Download process failed"
             cleanup_job_temp_files(job_id, target_dir, base_folder=base_folder)
             return
 
@@ -639,12 +828,7 @@ def run_download(job_id, url, format_choice, format_id, output_folder=None, crea
 
         # Post-download section trimming via FFmpeg (lossless, instant stream copy)
         if trim_method != "direct" and (trim_start or trim_end):
-            job["progress"] = {
-                "percent": 99.0,
-                "speed": "",
-                "eta": "",
-                "stage": "Trimming clip...",
-            }
+            _set_progress(97.0, "Trimming clip...")
             file_ext = os.path.splitext(chosen)[1]
             trimmed_chosen = os.path.join(target_dir, f"{job_id}_trimmed{file_ext}")
             trim_cmd = ["ffmpeg", "-y"]
@@ -721,6 +905,9 @@ def run_download(job_id, url, format_choice, format_id, output_folder=None, crea
         # Remove any lingering temporary files (.part, .ytdl, etc.) for this job
         cleanup_job_temp_files(job_id, target_dir, keep_file=final_path, base_folder=base_folder)
 
+        # Android: make the file visible in the file manager's Videos/Audio/Images sections
+        android_media_scan(job["file"])
+
         # Record into history
         file_size_bytes = 0
         try:
@@ -783,27 +970,13 @@ def get_info():
     cookies_source = data.get("cookies_source", "auto")
     use_client_spoof = data.get("use_client_spoof", True)
 
-    cmd = ["yt-dlp", "--no-playlist", "--geo-bypass"] + get_ytdlp_bot_bypass_args(cookies_source, use_client_spoof) + ["-j", "--", url]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
-        if result.returncode != 0:
-            err_lower = (result.stderr or "").lower()
-            # Smart fallback: if blocked by bot detection, retry with client simulation and cookies if not already tried
-            if "confirm you're not a bot" in err_lower or "429" in err_lower or "sign in" in err_lower:
-                # Try fallback with android client if not already included
-                fallback_args = ["--extractor-args", "youtube:player_client=android,web"]
-                if detect_firefox_profile() and "--cookies-from-browser" not in cmd and "--cookies" not in cmd:
-                    fallback_args.extend(["--cookies-from-browser", "firefox"])
-                elif os.path.exists(COOKIE_FILE) and os.path.getsize(COOKIE_FILE) > 0 and "--cookies" not in cmd:
-                    fallback_args.extend(["--cookies", COOKIE_FILE])
-
-                fallback_cmd = ["yt-dlp", "--no-playlist", "--geo-bypass"] + fallback_args + ["-j", "--", url]
-                fb_res = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
-                if fb_res.returncode == 0 and fb_res.stdout.strip():
-                    result = fb_res
+        result = run_ytdlp_with_fallbacks(
+            ["yt-dlp", "--no-playlist", "--geo-bypass"], ["-j", "--", url],
+            url, cookies_source, use_client_spoof, timeout=60)
 
         if result.returncode != 0:
-            return jsonify({"error": result.stderr.strip().split("\n")[-1]}), 400
+            return jsonify({"error": friendly_block_message(result.stderr)}), 400
 
         info = parse_ytdlp_json(result.stdout)
         duration = info.get("duration") or 0
@@ -985,7 +1158,7 @@ def get_filesize():
     if not is_valid_media_url(url):
         return jsonify({"error": "Invalid or unsupported URL scheme"}), 400
 
-    cmd = ["yt-dlp", "--no-playlist", "--geo-bypass"] + get_ytdlp_bot_bypass_args(cookies_source, use_client_spoof) + ["-j", "--skip-download"]
+    cmd = ["yt-dlp", "--no-playlist", "--geo-bypass"] + get_bypass_args_for(url, cookies_source, use_client_spoof) + ["-j", "--skip-download"]
     if format_choice == "audio":
         cmd += ["-x", "--audio-format", "mp3"]
     elif format_id:
@@ -1348,7 +1521,9 @@ def system_info():
     home = os.path.expanduser("~")
 
     server_os = "windows"
-    if "darwin" in sys_name:
+    if is_android():
+        server_os = "android"
+    elif "darwin" in sys_name:
         server_os = "mac"
     elif "linux" in sys_name:
         server_os = "linux"
@@ -1356,8 +1531,8 @@ def system_info():
     defaults = {
         "windows": os.path.join(home, "Downloads", "ReClip") if "windows" in sys_name else "C:\\Users\\Downloads\\ReClip",
         "mac": os.path.join(home, "Downloads", "ReClip") if "darwin" in sys_name else "~/Downloads/ReClip",
-        "linux": os.path.join(home, "Downloads", "ReClip") if "linux" in sys_name else "~/Downloads/ReClip",
-        "android": "/storage/emulated/0/Download/ReClip",
+        "linux": os.path.join(home, "Downloads", "ReClip") if (server_os == "linux") else "~/Downloads/ReClip",
+        "android": get_android_download_dir() if server_os == "android" else "/storage/emulated/0/Download/ReClip",
         "ios": "Files/Downloads/ReClip",
     }
 
@@ -1368,11 +1543,46 @@ def system_info():
     })
 
 
+_DRIVES_CACHE = {"t": 0.0, "data": []}
+
+
+def _list_windows_drives(ttl=15.0):
+    """Windows drive letters, cached briefly: probing every letter (esp. disconnected
+    network drives or empty card readers) can take seconds and made the folder picker lag."""
+    if platform.system().lower() != "windows":
+        return []
+    now = time.time()
+    if now - _DRIVES_CACHE["t"] < ttl and _DRIVES_CACHE["data"]:
+        return _DRIVES_CACHE["data"]
+    import string
+    drives = []
+    for letter in string.ascii_uppercase:
+        drv = f"{letter}:\\"
+        if os.path.exists(drv):
+            drives.append({"name": f"{letter}:", "path": drv})
+    _DRIVES_CACHE["t"] = now
+    _DRIVES_CACHE["data"] = drives
+    return drives
+
+
 @app.route("/api/browse-folders", methods=["GET"])
 @app.route("/api/browse-folder", methods=["GET"])
 def browse_folders():
     req_path = request.args.get("path", "").strip()
+    ensure = request.args.get("ensure", "") == "1"
     home = os.path.expanduser("~")
+
+    # Android: accept paths relative to shared storage ("Download/ReClip")
+    if req_path and is_android() and not os.path.isabs(req_path) and not req_path.startswith("~") \
+            and not re.match(r"^[A-Za-z]:[\\/]", req_path):
+        req_path = os.path.join(ANDROID_SHARED_ROOT, req_path.strip("/\\"))
+
+    # Optionally create the folder (used by the "ReClip" shortcut) so it can be opened directly
+    if ensure and req_path and is_safe_system_path(req_path):
+        try:
+            os.makedirs(os.path.abspath(os.path.expanduser(req_path)), exist_ok=True)
+        except Exception as e:
+            print(f"Could not create folder {req_path}: {e}")
 
     # If no path provided or path is forbidden, default to Downloads or home
     if not req_path or not is_safe_system_path(req_path):
@@ -1380,16 +1590,28 @@ def browse_folders():
         if not os.path.exists(req_path):
             req_path = home
 
-    target_path = os.path.abspath(req_path)
+    target_path = os.path.abspath(os.path.expanduser(req_path))
+    # A folder that doesn't exist yet (e.g. the default ".../ReClip") -> open its nearest existing parent
+    probe = target_path
+    while probe and not os.path.isdir(probe) and os.path.dirname(probe) != probe:
+        probe = os.path.dirname(probe)
+    if probe and os.path.isdir(probe) and is_safe_system_path(probe):
+        target_path = probe
     if not os.path.exists(target_path) or not is_safe_system_path(target_path):
         target_path = os.path.join(home, "Downloads")
         if not os.path.exists(target_path):
             target_path = home
 
+    # Android: never go above shared storage (/storage/emulated/0)
+    if is_android() and os.path.isdir(ANDROID_SHARED_ROOT) and target_path.rstrip("/") in ("/storage", "/storage/emulated", "/storage/self", ""):
+        target_path = ANDROID_SHARED_ROOT
+
     # Parent directory
     parent_path = os.path.dirname(target_path)
     if parent_path == target_path or not is_safe_system_path(parent_path):
         parent_path = ""  # Reached safe boundary or root
+    if is_android() and target_path.rstrip("/") == ANDROID_SHARED_ROOT:
+        parent_path = ""  # Home of shared storage: can't go higher
 
     # Quick locations
     quick_locations = []
@@ -1403,15 +1625,20 @@ def browse_folders():
         p = os.path.join(home, sub)
         if os.path.exists(p) and is_safe_system_path(p):
             quick_locations.append({"name": name, "path": p})
+    if is_android():
+        # Android shortcut order (after "ReClip", which the UI adds first): Home, Download, Movies, Music
+        quick_locations = []
+        for name, p in [
+            ("Shared storage", "/storage/emulated/0"),  # shown as "Home" in the UI
+            ("Download", "/storage/emulated/0/Download"),
+            ("Movies", "/storage/emulated/0/Movies"),
+            ("Music", "/storage/emulated/0/Music"),
+        ]:
+            if os.path.isdir(p) and os.access(p, os.R_OK):
+                quick_locations.append({"name": name, "path": p})
 
     # Available drives on Windows
-    drives = []
-    if platform.system().lower() == "windows":
-        import string
-        for letter in string.ascii_uppercase:
-            drv = f"{letter}:\\"
-            if os.path.exists(drv):
-                drives.append({"name": f"{letter}:", "path": drv})
+    drives = _list_windows_drives()
 
     # Scan subfolders safely
     folders = []
@@ -1435,6 +1662,8 @@ def browse_folders():
         "current_path": target_path,
         "parent_path": parent_path,
         "quick_locations": quick_locations,
+        "is_android": is_android(),
+        "reclip_path": get_system_default_folder(),
         "drives": drives,
         "folders": folders,
     })
@@ -1464,14 +1693,21 @@ def create_folder():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/history")
+@app.route("/history", strict_slashes=False)
 def history_page():
     return render_template("index.html")
 
 
-@app.route("/settings")
+@app.route("/settings", strict_slashes=False)
 def settings_page():
     return render_template("index.html")
+
+
+def _linux_opener():
+    """xdg-open on Linux desktops, termux-open on Termux/Android; None if neither exists."""
+    if is_android() and shutil.which("termux-open"):
+        return "termux-open"
+    return shutil.which("xdg-open")
 
 
 def open_in_file_manager(abs_path):
@@ -1542,7 +1778,10 @@ $w.Run("explorer.exe " + $a, 1, $false)
         return True
     else:
         folder = target_dir if os.path.exists(target_dir) else abs_path
-        subprocess.Popen(["xdg-open", folder])
+        opener = _linux_opener()
+        if not opener:
+            return False
+        subprocess.Popen([opener, folder])
         return True
 
 
@@ -1634,7 +1873,10 @@ if (Test-Path -LiteralPath $p) {
             subprocess.Popen(["open", abs_path])
             return jsonify({"success": True, "ok": True})
         else:
-            subprocess.Popen(["xdg-open", abs_path])
+            opener = _linux_opener()
+            if not opener:
+                return jsonify({"error": "No system opener available on this device (install termux-api on Android)" if is_android() else "No system opener (xdg-open) available on this server", "ok": False}), 500
+            subprocess.Popen([opener, abs_path])
             return jsonify({"success": True, "ok": True})
     except Exception as e:
         return jsonify({"error": str(e), "ok": False}), 500
@@ -1737,4 +1979,8 @@ def delete_cookies():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8899))
     host = os.environ.get("HOST", "0.0.0.0")
+    if is_android() and not shutil.which("node"):
+        print("\n  [!] nodejs is missing, so YouTube will only show 360p.\n"
+              "      Fix:  pkg install -y nodejs && pip install -U yt-dlp yt-dlp-ejs\n"
+              "      Then restart ReClip.\n")
     app.run(host=host, port=port)

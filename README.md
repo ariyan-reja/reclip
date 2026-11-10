@@ -4,6 +4,8 @@ A self-hosted, open-source video and audio downloader with a clean web UI. Paste
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue)
 
+**[Live Demo →](https://ariyan-reja.github.io/reclip/)** — runs in your browser with simulated data, no install needed.
+
 ## Features
 
 - Download videos from 1000+ supported sites (via [yt-dlp](https://github.com/yt-dlp/yt-dlp))
@@ -11,10 +13,12 @@ A self-hosted, open-source video and audio downloader with a clean web UI. Paste
 - Quality/resolution picker
 - Bulk downloads and Playlist support — paste multiple URLs or playlist links
 - Automatic URL deduplication
-- Browser cookies support & advanced bot bypass
+- Browser cookies support & automatic YouTube age-restriction / bot-check handling
 - Subtitle embedding and language selection
 - Video trimming / direct slice downloading (lossless stream copy)
 - Custom output folders
+- Runs on Android via Termux
+- Built-in Setup & Update guide
 - Clean, responsive UI — no frameworks, no build step
 - Single Python file backend
 
@@ -39,13 +43,26 @@ cd reclip
 ./reclip.sh
 ```
 
-**Option 3: Docker**
+**Option 3: Android (Termux)**
+Install [Termux](https://f-droid.org/packages/com.termux/) from F-Droid or GitHub (not the Play Store), then:
+```bash
+pkg update -y && pkg upgrade -y
+pkg install -y python ffmpeg git nodejs
+pip install -U flask yt-dlp yt-dlp-ejs
+git clone https://github.com/ariyan-reja/reclip.git
+cd reclip
+termux-setup-storage    # optional: allow saving to phone storage
+python app.py
+```
+Then open **http://localhost:8899** in the phone's browser. `nodejs` and `yt-dlp-ejs` are needed for YouTube to offer more than 360p. Files are saved to `Download/ReClip` by default.
+
+**Option 4: Docker**
 If you have Docker installed:
 ```bash
 docker build -t reclip . && docker run -p 8899:8899 reclip
 ```
 
-After starting the server, open **http://localhost:8899** in your browser.
+After starting the server, open **http://localhost:8899** in your browser. Step-by-step setup and update instructions for every platform are also available inside the app (**Setup & Update**).
 
 ## Usage
 
@@ -66,7 +83,7 @@ YouTube, TikTok, Instagram, Twitter/X, Reddit, Facebook, Vimeo, Twitch, Dailymot
 - **Backend:** Python + Flask
 - **Frontend:** HTML/CSS/JS templates
 - **Download engine:** [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/)
-- **Dependencies:** Flask, yt-dlp
+- **Dependencies:** Flask, yt-dlp (Android also needs Node.js and yt-dlp-ejs for HD YouTube)
 
 ## Disclaimer
 
