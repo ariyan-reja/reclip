@@ -1,0 +1,17 @@
+services:
+  reclip:
+    build: .
+    image: reclip:latest
+    container_name: reclip
+    ports:
+      - "127.0.0.1:8899:8899"
+    environment:
+      - DATA_DIR=/app/data
+    volumes:
+      - reclip-downloads:/app/downloads
+      - reclip-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  reclip-downloads:
+  reclip-data:

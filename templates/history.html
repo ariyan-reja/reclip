@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReClip — Download History</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script>
+    (function () {
+      try {
+        const saved = localStorage.getItem('reclip_settings');
+        let theme = 'system';
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed && parsed.theme) theme = parsed.theme;
+        }
+        let effective = theme;
+        if (theme === 'system') {
+          effective = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', effective);
+      } catch (e) { }
+    })();
+  </script>
+  <style>
+    :root {
+      --bg: #f4f1eb;
+      --fg: #3a3a38;
+      --accent: #e85d2a;
+      --accent-hover: #d04e1f;
+      --muted: #9c9889;
+      --card: #fff;
+      --card-border: #e2ded6;
+      --success: #2d8a4e;
+      --error: #c43d3d;
+      --radius: 14px;
+    }
+
+    [data-theme="dark"],
+    body.dark {
+      --bg: #141413;
+      --fg: #f3efe6;
+      --accent: #eb5e28;
+      --accent-hover: #f16f39;
+      --muted: #959186;
+      --card: #1c1b18;
+      --card-border: #2c2a26;
+      --success: #34a853;
+      --error: #ea4335;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'DM Mono', monospace;
+      background: var(--bg);
+      color: var(--fg);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      opacity: 0.03;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+      background-size: 128px;
+    }
+
+    .page {
+      max-width: 680px;
+      margin: 0 auto;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 40px 24px 24px;
+      box-sizing: border-box;
+    }
+
+    /* Header Nav */
+    .brand-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 28px;
+      flex-shrink: 0;
+    }
+
+    .brand a {
+      text-decoration: none;
+      color: inherit;
+    }
+    .brand h1 {
+      font-family: 'Instrument Serif', serif;
+      font-size: 3.8rem;
+      font-weight: 400;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      color: var(--fg);
+    }
+    .brand h1 em { font-style: italic; color: var(--accent); }
+    .brand p {
+      margin-top: 8px;
+      font-size: 0.76rem;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .nav-tabs {
+      display: flex;
+      border: 1.5px solid var(--card-border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--card);
+    }
+    .nav-tab {
+      padding: 9px 18px;
+      font-family: 'DM Mono', monospace;
+      font-size: 0.76rem;
+      text-decoration: none;
+      color: var(--muted);
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      transition: all 0.2s;
+    }
+    .nav-tab:hover { color: var(--fg); }
+    .nav-tab.active { background: var(--fg); color: var(--bg); }
+
+    /* Top Bar */
+    .history-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1.5px solid var(--card-border);
+      flex-shrink: 0;
+    }
+    .history-title {
+      font-family: 'Instrument Serif', serif;
+      font-size: 1.8rem;
+      color: var(--fg);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .history-count {
+      font-family: 'DM Mono', monospace;
+      font-size: 0.72rem;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: var(--card-border);
+      color: var(--fg);
+      font-weight: 500;
+    }
+
+    .clear-btn {
+      padding: 7px 14px;
+      border: 1.5px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.7rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .clear-btn:hover {
+      border-color: var(--error);
+      color: var(--error);
+    }
+
+    #historyContainer {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 6px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--card-border) transparent;
+    }
+    #historyContainer::-webkit-scrollbar {
+      width: 6px;
+    }
+    #historyContainer::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    #historyContainer::-webkit-scrollbar-thumb {
+      background: var(--card-border);
+      border-radius: 4px;
+    }
+    #historyContainer::-webkit-scrollbar-thumb:hover {
+      background: var(--muted);
+    }
+
+    /* Cards */
+    .history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .history-card {
+      display: flex;
+      gap: 14px;
+      border: 1.5px solid var(--card-border);
+      border-radius: var(--radius);
+      background: var(--card);
+      padding: 14px;
+      position: relative;
+      transition: border-color 0.2s;
+    }
+    .history-card:hover {
+      border-color: var(--muted);
+    }
+    .history-card .card-title {
+      padding-right: 36px;
+      box-sizing: border-box;
+    }
+    .history-delete-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+      padding: 0;
+      z-index: 2;
+    }
+    .history-delete-btn:hover {
+      background: rgba(196, 61, 61, 0.08);
+      border-color: rgba(196, 61, 61, 0.2);
+      color: var(--error);
+    }
+
+    .card-thumb {
+      width: 120px;
+      min-width: 120px;
+      height: 80px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--card-border);
+      flex-shrink: 0;
+      position: relative;
+    }
+    .card-thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .card-thumb .no-thumb {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+    }
+    .card-thumb .no-thumb svg {
+      width: 28px;
+      height: 28px;
+      opacity: 0.5;
+    }
+
+    .card-duration {
+      position: absolute;
+      bottom: 5px;
+      right: 5px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #ffffff;
+      font-family: 'Inter', -apple-system, sans-serif;
+      font-size: 0.68rem;
+      font-weight: 500;
+      padding: 2px 6px;
+      border-radius: 4px;
+      line-height: 1.2;
+      pointer-events: none;
+      z-index: 2;
+      opacity: 0;
+      transition: opacity 0.2s ease-in;
+    }
+
+    .card-thumb img.loaded ~ .card-duration,
+    .card-thumb .no-thumb ~ .card-duration {
+      opacity: 1;
+    }
+
+    .card-body {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .card-title {
+      font-family: 'Instrument Serif', serif;
+      font-size: 1.1rem;
+      line-height: 1.25;
+      color: var(--fg);
+      margin-bottom: 3px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card-meta {
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.01em;
+      margin-bottom: 6px;
+    }
+
+    .card-badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+    .badge {
+      font-size: 0.62rem;
+      padding: 2px 7px;
+      border-radius: 5px;
+      border: 1px solid var(--card-border);
+      background: rgba(128,128,128,0.06);
+      color: var(--fg);
+    }
+    .badge.format {
+      text-transform: uppercase;
+      font-weight: 500;
+      background: rgba(232,93,42,0.08);
+      color: var(--accent);
+      border-color: rgba(232,93,42,0.2);
+    }
+    .badge.size {
+      font-weight: 500;
+    }
+
+    .card-saved-dir {
+      font-size: 0.65rem;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .card-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .action-btn {
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: 1.5px solid var(--card-border);
+      background: var(--fg);
+      color: var(--bg);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.68rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.2s;
+    }
+    .action-btn:hover { opacity: 0.85; }
+
+    .delete-item-btn {
+      padding: 5px 10px;
+      border-radius: 6px;
+      border: 1.5px solid var(--card-border);
+      background: transparent;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      font-size: 0.68rem;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .delete-item-btn:hover {
+      border-color: var(--error);
+      color: var(--error);
+    }
+
+    /* Empty State */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      border: 1.5px dashed var(--card-border);
+      border-radius: var(--radius);
+      background: var(--card);
+    }
+    .empty-icon {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 16px;
+      color: var(--muted);
+      opacity: 0.6;
+    }
+    .empty-title {
+      font-family: 'Instrument Serif', serif;
+      font-size: 1.5rem;
+      color: var(--fg);
+      margin-bottom: 8px;
+    }
+    .empty-text {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+    .empty-action {
+      display: inline-block;
+      padding: 9px 18px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 0.76rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      transition: background 0.2s;
+    }
+    .empty-action:hover { background: var(--accent-hover); }
+
+    /* Footer */
+    .footer {
+      margin-top: 18px;
+      text-align: center;
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      line-height: 1.8;
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 500px) {
+      .brand h1 { font-size: 2.8rem; }
+      .page { padding: 24px 16px 16px; }
+      .brand-row { margin-bottom: 20px; }
+      .history-card { flex-direction: column; gap: 10px; }
+      .card-thumb { width: 100%; min-width: unset; height: 160px; }
+      .card-title { white-space: normal; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="brand-row">
+      <div class="brand">
+        <a href="/"><h1>Re<em>Clip</em></h1></a>
+        <p>Free media downloader</p>
+      </div>
+      <div class="nav-tabs">
+        <a href="/" class="nav-tab">Downloads</a>
+        <a href="/history" class="nav-tab active">History</a>
+      </div>
+    </div>
+
+    <div class="history-header">
+      <div class="history-title">
+        <span>Download History</span>
+        <span class="history-count" id="historyCount">0</span>
+      </div>
+      <button class="clear-btn" id="clearBtn" onclick="clearAllHistory()" style="display: none;">Clear History</button>
+    </div>
+
+    <div id="historyContainer">
+      <div class="empty-state" id="loadingState">
+        <p class="empty-text">Loading history...</p>
+      </div>
+    </div>
+
+    <div class="footer">
+      ReClip &middot; All downloads stored locally on your device
+    </div>
+  </div>
+
+  <script>
+    async function loadHistory() {
+      const container = document.getElementById('historyContainer');
+      const countEl = document.getElementById('historyCount');
+      const clearBtn = document.getElementById('clearBtn');
+
+      try {
+        const res = await fetch('/api/history');
+        const data = await res.json();
+        const history = data.history || [];
+
+        countEl.textContent = history.length;
+
+        if (history.length === 0) {
+          clearBtn.style.display = 'none';
+          container.innerHTML = `
+            <div class="empty-state">
+              <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+              </svg>
+              <div class="empty-title">No Downloads Yet</div>
+              <p class="empty-text">Videos you download will appear here with file details and saved paths.</p>
+              <a href="/" class="empty-action">Start Downloading</a>
+            </div>
+          `;
+          return;
+        }
+
+        clearBtn.style.display = 'inline-block';
+
+        let html = '<div class="history-list">';
+        history.forEach((item) => {
+          const isAudio = item.format === 'audio';
+          const safeId = (item.id || '').replace(/[^a-zA-Z0-9_\-]/g, '');
+          let thumbHtml = '';
+          if (item.thumbnail) {
+            thumbHtml = `<img src="${esc(item.thumbnail)}" alt="" onload="this.classList.add('loaded')">`;
+          } else if (isAudio) {
+            thumbHtml = `<div class="no-thumb" style="color:var(--accent)"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>`;
+          } else {
+            thumbHtml = `<div class="no-thumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="20" height="20" rx="2"/><circle cx="8" cy="8" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></div>`;
+          }
+
+          const formatLabel = isAudio ? 'MP3 Audio' : 'MP4 Video';
+          const sizeLabel = item.filesize && item.filesize !== '--' ? item.filesize : '';
+          const savedPath = item.saved_dir || item.file_path || '';
+
+          html += `
+            <div class="history-card" id="card-${safeId}">
+              <button type="button" class="history-delete-btn" onclick="deleteHistoryItem('${safeId}')" title="Delete from history" aria-label="Delete">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+              <div class="card-thumb">${thumbHtml}${item.duration ? `<span class="card-duration">${fmtDur(item.duration)}</span>` : ''}</div>
+              <div class="card-body">
+                <div class="card-title" title="${esc(item.title)}">${esc(item.title)}</div>
+                <div class="card-meta">${esc(item.uploader || 'Unknown Channel')} &middot; ${esc(item.timestamp || '')}</div>
+                
+                <div class="card-badges">
+                  <span class="badge format">${formatLabel}</span>
+                  ${sizeLabel ? `<span class="badge size">${esc(sizeLabel)}</span>` : ''}
+                </div>
+
+                ${savedPath ? `
+                  <div class="card-saved-dir" title="${esc(savedPath)}" style="margin-bottom: 0;">
+                    <span>📁</span> <span>${esc(savedPath)}</span>
+                  </div>
+                ` : ''}
+              </div>
+            </div>
+          `;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+        container.querySelectorAll('.card-thumb img').forEach(img => {
+          if (img.complete && img.naturalWidth > 0) {
+            img.classList.add('loaded');
+          }
+        });
+      } catch (err) {
+        container.innerHTML = `<div class="empty-state"><p class="empty-text" style="color:var(--error);">Failed to load history: ${err.message}</p></div>`;
+      }
+    }
+
+    async function deleteHistoryItem(id) {
+      if (!confirm('Remove this item from history?')) return;
+      try {
+        await fetch(`/api/history/${id}`, { method: 'DELETE' });
+        loadHistory();
+      } catch (err) {
+        alert('Failed to delete history item');
+      }
+    }
+
+    async function clearAllHistory() {
+      if (!confirm('Clear all download history?')) return;
+      try {
+        await fetch('/api/history', { method: 'DELETE' });
+        loadHistory();
+      } catch (err) {
+        alert('Failed to clear history');
+      }
+    }
+
+    function esc(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function fmtDur(sec) {
+      if (!sec) return '';
+      const s = Math.floor(sec);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const rem = s % 60;
+      if (h > 0) {
+        return `${h}:${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+      }
+      return `${m}:${String(rem).padStart(2, '0')}`;
+    }
+
+    document.addEventListener('DOMContentLoaded', loadHistory);
+  </script>
+</body>
+</html>
