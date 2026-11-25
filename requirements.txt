@@ -1,0 +1,6 @@
+flask>=3.0,<4
+# "default" extra: mutagen (embed thumbnail/metadata in MP3), pycryptodomex,
+# websockets, brotli, certifi, requests, urllib3
+yt-dlp[default]
+# JS challenge solver scripts for YouTube HD (used with --js-runtimes node)
+yt-dlp-ejs
