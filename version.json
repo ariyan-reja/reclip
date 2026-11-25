@@ -1,4 +1,4 @@
 {
-  "version": "1.0",
-  "notes": "Initial release of ReClip v1.0"
+  "version": "2.0",
+  "notes": "UI polish, mobile layout, custom scrollbars, tap-to-copy & update checker"
 }

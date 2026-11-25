@@ -29,7 +29,7 @@ if not os.path.exists(DATA_DIR):
 HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
 COOKIE_FILE = os.path.join(DATA_DIR, "cookies.txt")
 VERSION_FILE = os.path.join(os.path.dirname(__file__), "version.json")
-APP_VERSION = "1.0"
+APP_VERSION = "2.0"
 UPDATE_REPO = "ariyan-reja/reclip"
 _UPDATE_CACHE = {"t": 0.0, "data": None}
 jobs = {}

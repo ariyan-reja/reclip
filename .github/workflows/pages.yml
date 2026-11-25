@@ -28,7 +28,7 @@ jobs:
       - name: Prepare site
         run: |
           mkdir _site
-          cp demo/reclip-v1.0-demo.html _site/index.html
+          cp demo/reclip-v2.0-demo.html _site/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

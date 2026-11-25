@@ -7,7 +7,7 @@ A self-hosted, open-source video and audio downloader with a clean web UI. Paste
 
 > [!TIP]
 > ### 🌐 [Try the Live Preview → https://ariyan-reja.github.io/reclip/](https://ariyan-reja.github.io/reclip/)
-> Test the full ReClip v1.0 interface right in your browser with simulated data — **no install required**. Includes the built-in **Setup & Update guide** for your device.
+> Test the full ReClip v2.0 interface right in your browser with simulated data — **no install required**. Includes the built-in **Setup & Update guide** for your device.
 
 ## Features
 
